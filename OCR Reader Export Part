@@ -1,0 +1,189 @@
+import sys
+import cv2
+import os
+from PyQt6.QtWidgets import (
+    QApplication, QLabel, QVBoxLayout, QPushButton, QTextEdit, QMainWindow, QWidget, QTableWidget, QTableWidgetItem, QHBoxLayout, QLineEdit
+)
+from PyQt6.QtGui import QPixmap, QImage
+from PyQt6.QtCore import Qt, QTimer, QDateTime
+import easyocr
+
+
+class OCRApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Image to Text Converter with Camera and Address Input")
+        self.setGeometry(100, 100, 1000, 800)
+
+        # Initialize EasyOCR Reader
+        self.reader = easyocr.Reader(['en'], gpu=False)
+
+        # Central widget
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+
+        # Layout
+        self.layout = QVBoxLayout()
+        self.central_widget.setLayout(self.layout)
+
+        # Camera preview label
+        self.camera_label = QLabel("Camera Preview")
+        self.camera_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.camera_label.setStyleSheet("border: 1px solid black;")
+        self.layout.addWidget(self.camera_label)
+
+        # Folder path input for saving photos
+        self.folder_path_input_label = QLabel("Folder Path to Store Photos:")
+        self.layout.addWidget(self.folder_path_input_label)
+
+        self.folder_path_input = QLineEdit()
+        self.folder_path_input.setPlaceholderText("Enter folder path here")
+        self.layout.addWidget(self.folder_path_input)
+
+        # Buttons layout
+        self.button_layout = QHBoxLayout()
+        self.layout.addLayout(self.button_layout)
+
+        # Start Camera button
+        self.start_camera_button = QPushButton("Start Camera")
+        self.start_camera_button.clicked.connect(self.start_camera)
+        self.button_layout.addWidget(self.start_camera_button)
+
+        # Capture button
+        self.capture_button = QPushButton("Capture Photo")
+        self.capture_button.clicked.connect(self.capture_photo)
+        self.capture_button.setEnabled(False)
+        self.button_layout.addWidget(self.capture_button)
+
+        # Convert button
+        self.convert_button = QPushButton("Convert to Text")
+        self.convert_button.clicked.connect(self.convert_to_text)
+        self.convert_button.setEnabled(False)
+        self.button_layout.addWidget(self.convert_button)
+
+        # Delete row button
+        self.delete_row_button = QPushButton("Delete Selected Row")
+        self.delete_row_button.clicked.connect(self.delete_row)
+        self.button_layout.addWidget(self.delete_row_button)
+
+        # Text display area
+        self.text_area = QTextEdit()
+        self.text_area.setReadOnly(True)
+        self.layout.addWidget(self.text_area)
+
+        # Table to store text and manual address input
+        self.table_widget = QTableWidget()
+        self.table_widget.setColumnCount(4)
+        self.table_widget.setHorizontalHeaderLabels(["Photo Path", "Extracted Text", "Address (Manual Input)", "Timestamp"])
+        self.layout.addWidget(self.table_widget)
+
+        # Photo preview label for showing the captured photo before OCR
+        self.preview_label = QLabel("Preview of Captured Photo")
+        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_label.setStyleSheet("border: 1px solid black;")
+        self.layout.addWidget(self.preview_label)
+
+        # Timer for updating the camera feed
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_frame)
+
+        # Placeholder for the captured image path and camera
+        self.image_path = None
+        self.capture = None
+        self.current_frame = None
+
+    def start_camera(self):
+        # Open the camera
+        self.capture = cv2.VideoCapture(0)
+        if not self.capture.isOpened():
+            self.text_area.setText("Error: Could not access the camera.")
+            return
+
+        self.text_area.setText("Camera started. Click 'Capture Photo' to take a photo.")
+        self.capture_button.setEnabled(True)
+        self.timer.start(30)  # Update every 30 ms
+
+    def update_frame(self):
+        # Read a frame from the camera
+        ret, frame = self.capture.read()
+        if ret:
+            self.current_frame = frame
+            # Convert the frame to QImage for display
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            height, width, channel = frame_rgb.shape
+            bytes_per_line = channel * width
+            qimage = QImage(frame_rgb.data, width, height, bytes_per_line, QImage.Format.Format_RGB888)
+            pixmap = QPixmap.fromImage(qimage)
+            self.camera_label.setPixmap(pixmap.scaled(640, 480, Qt.AspectRatioMode.KeepAspectRatio))
+
+    def capture_photo(self):
+        if self.current_frame is not None:
+            folder_path = self.folder_path_input.text() or "captured_photos"
+            os.makedirs(folder_path, exist_ok=True)
+
+            # Save image with timestamp
+            timestamp = QDateTime.currentDateTime().toString("yyyyMMdd_HHmmss")
+            self.image_path = os.path.join(folder_path, f"photo_{timestamp}.jpg")
+            cv2.imwrite(self.image_path, self.current_frame)
+
+            # Stop the camera
+            self.timer.stop()
+            self.capture.release()
+
+            # Display the captured image preview in the label
+            self.display_image_preview()
+
+            self.camera_label.setText("Photo captured and saved.")
+            self.text_area.setText("Photo captured. Click 'Convert to Text' to extract text.")
+            self.convert_button.setEnabled(True)
+
+    def display_image_preview(self):
+        # Convert the captured frame to QImage for preview
+        frame_rgb = cv2.cvtColor(self.current_frame, cv2.COLOR_BGR2RGB)
+        height, width, channel = frame_rgb.shape
+        bytes_per_line = channel * width
+        qimage = QImage(frame_rgb.data, width, height, bytes_per_line, QImage.Format.Format_RGB888)
+        pixmap = QPixmap.fromImage(qimage)
+
+        # Set the preview label to show the image
+        self.preview_label.setPixmap(pixmap.scaled(320, 240, Qt.AspectRatioMode.KeepAspectRatio))
+
+    def convert_to_text(self):
+        if self.image_path:
+            try:
+                results = self.reader.readtext(self.image_path)
+                extracted_text = "\n".join([text for _, text, _ in results])
+                self.text_area.setText(extracted_text if extracted_text else "No text detected.")
+
+                # Add a new row to the table with the timestamp
+                row_position = self.table_widget.rowCount()
+                self.table_widget.insertRow(row_position)
+
+                # Fill in the first three columns
+                self.table_widget.setItem(row_position, 0, QTableWidgetItem(self.image_path))
+                self.table_widget.setItem(row_position, 1, QTableWidgetItem(extracted_text))
+
+                # Make the "Address" column editable
+                self.table_widget.setItem(row_position, 2, QTableWidgetItem(""))
+                self.table_widget.item(row_position, 2).setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEditable | Qt.ItemFlag.ItemIsEnabled)
+
+                # Add timestamp to the fourth column
+                self.table_widget.setItem(row_position, 3, QTableWidgetItem(QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss")))
+
+            except Exception as e:
+                self.text_area.setText(f"Error: {str(e)}")
+
+    def delete_row(self):
+        selected_row = self.table_widget.currentRow()
+        if selected_row >= 0:
+            self.table_widget.removeRow(selected_row)
+            self.text_area.setText("Selected row deleted.")
+        else:
+            self.text_area.setText("No row selected to delete.")
+
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = OCRApp()
+    window.show()
+    sys.exit(app.exec())
